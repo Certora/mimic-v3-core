@@ -3,8 +3,6 @@ methods {
     // Authorizer
     function hasPermissions(address,address) external returns (bool) envfree;
     function hasPermission(address,address,bytes4) external returns (bool) envfree;
-    function isAuthorized(address,address,bytes4,uint256[]) external returns (bool) envfree;
-    function getPermissionParams(address,address,bytes4) external returns (IAuthorizer.Param[]) envfree;
     function getPermissionsLength(address,address) external returns (uint256) envfree;
 }
 
@@ -34,7 +32,7 @@ methods {
 
         for all values v . !authorized[v] => indexes[v] = 0
         for all values v . authorized[v] => indexes[v] in [1..length] && values[indexes[v]] = v
-        for all indexes i. i in [1..length] => authoriezed[values[i]] && indexes[values[i]] = i
+        for all indexes i. i in [1..length] => authorized[values[i]] && indexes[values[i]] = i
 
     Since in CVL we only have mappings, not arrays, we have to keep the length in a seperate ghost
     variable.  The values array is only defined for indexes in [1..length]. All other entries can be
@@ -52,16 +50,14 @@ ghost mapping(address => mapping(address => mathint)) ghostPermissionsLength {
 }
 
 // The initial state of values mapping shouldn't matter. We do not assume anything about the values since length = 0.
-ghost mapping(address => mapping(address => mapping(mathint => bytes4))) ghostPermissionsValues {
-    init_state axiom forall address who. forall address where. forall mathint idx . ghostPermissionsValues[who][where][idx] == to_bytes4(0);
-}
+ghost mapping(address => mapping(address => mapping(mathint => bytes4))) ghostPermissionsValues;
 
-// There is not element in the set, therefore, the mapping must send every bytes4 to 0.
+// There is not element in the set, therefore, the mapping must send every "what" to 0.
 ghost mapping(address => mapping(address => mapping(bytes4 => mathint))) ghostPermissionsIndexes {
     init_state axiom forall address who. forall address where. forall bytes4 what. ghostPermissionsIndexes[who][where][what] == 0;
 }
 
-// There is not element in the set, therefore, the mapping must send every bytes4 to 0.
+// There is not element in the set, therefore, the mapping must be false for every "what".
 ghost mapping(address => mapping(address => mapping(bytes4 => bool))) ghostAuthorized {
     init_state axiom forall address who. forall address where. forall bytes4 what. ghostAuthorized[who][where][what] == false;
 }
@@ -122,18 +118,15 @@ hook Sstore currentContract._permissionsLists[KEY address who][KEY address where
     // Deleting a permission
     if (!newAuthorized && oldAuthorized) {
         mathint indexOfWhat = ghostPermissionsIndexes[who][where][what];
-        if (indexOfWhat != 0) {// the element is there
-            // Find the last value
-            bytes4 lastValue = ghostPermissionsValues[who][where][length];
-            // And put it where what was
-            ghostPermissionsValues[who][where][indexOfWhat] = lastValue;
-            ghostPermissionsIndexes[who][where][lastValue] = indexOfWhat;
+        // Find the last value
+        bytes4 lastValue = ghostPermissionsValues[who][where][length];
+        // And put it where what was
+        ghostPermissionsValues[who][where][indexOfWhat] = lastValue;
+        ghostPermissionsIndexes[who][where][lastValue] = indexOfWhat;
 
-            // Now "remove" what
-            ghostPermissionsIndexes[who][where][what] = 0;
-            // ghostPermissionsValues[who][where][length] = 0 // not since we do not consider anything beyond index length
-            ghostPermissionsLength[who][where] = length - 1;
-        }
+        // Now "remove" what
+        ghostPermissionsIndexes[who][where][what] = 0;
+        ghostPermissionsLength[who][where] = length - 1;
     }
 
     ghostAuthorized[who][where][what] = newAuthorized;
@@ -158,12 +151,7 @@ invariant valueInvariant()
 
 invariant indexInvariant()
     forall address who. forall address where. forall mathint idx.
-        hookIndexInvariant(who, where, idx)
-    {
-        preserved {
-            requireInvariant valueInvariant();
-        }
-    }
+        hookIndexInvariant(who, where, idx);
 
 invariant lengthInvariant()
     forall address who. forall address where.
@@ -174,15 +162,9 @@ invariant lengthInvariant()
         }
     }
 
-// show that contract's permission.length always corresponds to our ghost state.
+// show that contract's permissionLists[who][where].count always corresponds to our ghost state.
 invariant checkCount(address who, address where)
-    ghostPermissionsLength[who][where] == to_mathint(getPermissionsLength(who, where))
-    {
-        preserved {
-            requireInvariant indexInvariant();
-            requireInvariant valueInvariant();
-        }
-    }
+    ghostPermissionsLength[who][where] == to_mathint(getPermissionsLength(who, where));
 
 // the target rule shows that hasPermission() implies hasPermissions() (i.e. length > 0).
 rule hasPermissionsCorrect(address who, address where, bytes4 what)
